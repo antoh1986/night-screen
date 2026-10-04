@@ -11,23 +11,30 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 import gamma
+import ipc
 
 # --- пределы ---------------------------------------------------------------
 TEMP_MIN, TEMP_MAX, TEMP_STEP = 1000, 10000, 50
 TEMP_DEFAULT = 6500                 # «нейтральный» белый
 BRIGHT_MIN, BRIGHT_MAX = 10, 100    # проценты; ниже 10 % экран почти не видно
 BRIGHT_DEFAULT = 100
-CONTRAST_MIN, CONTRAST_MAX = 30, 150  # проценты; выше 100 крайние тона обрезаются
+CONTRAST_MIN, CONTRAST_MAX = 30, 300  # проценты; выше 100 крайние тона обрезаются
 CONTRAST_DEFAULT = 100
-PIVOT_MIN, PIVOT_MAX = 0, 100       # ползунок «Центр контраста»: вправо — больше светлеет
+PIVOT_MIN, PIVOT_MAX = 0, 150       # ползунок «Центр контраста»: вправо — больше светлеет;
+                                    # правее 100 центр уходит ниже чёрного
 PIVOT_DEFAULT = 50
+HERE = os.path.dirname(os.path.abspath(__file__))
+POLL_MS = 100                       # как часто смотрим команды от значка в трее
 STATE_FILE = os.path.expanduser("~/.config/night-screen/state.json")
+PRESETS_FILE = os.path.expanduser("~/.config/night-screen/presets.json")
 
-# (название, температура K, яркость %)
+# (название, температура K, яркость %) — по умолчанию пресеты не трогают контраст;
+# через «Сохранить» в пресет записываются все четыре значения
 PRESETS = [
     ("День", 6500, 100),
     ("Вечер", 5000, 80),
@@ -43,6 +50,10 @@ FG_DIM = "#7c7c88"
 ACCENT = "#d9822b"
 FIELD = "#101014"
 BORDER = "#34343d"
+FG_OFF = "#4a4a54"      # текст неактивного интерфейса (режим сохранения)
+HILITE = "#4a3017"      # подсветка пресетов в режиме сохранения
+HILITE_HOVER = "#664220"
+FG_HI = "#f2c896"
 
 
 def kelvin_to_rgb(kelvin):
@@ -68,6 +79,20 @@ def rgb_hex(rgb, factor=1.0):
     return "#%02x%02x%02x" % tuple(int(c * factor) for c in rgb)
 
 
+def fade(color, k=0.3):
+    """Цвет (или пара цветов), приглушённый к фону панели — для неактивного интерфейса."""
+    if isinstance(color, tuple):
+        return tuple(fade(c, k) for c in color)
+    c = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    p = [int(PANEL[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(b + (a - b) * k) for a, b in zip(c, p))
+
+
+def in_range(temp, bright, contrast, pivot):
+    return (TEMP_MIN <= temp <= TEMP_MAX and BRIGHT_MIN <= bright <= BRIGHT_MAX
+            and CONTRAST_MIN <= contrast <= CONTRAST_MAX and PIVOT_MIN <= pivot <= PIVOT_MAX)
+
+
 # --- сохранённое состояние -------------------------------------------------
 def load_state():
     try:
@@ -81,8 +106,9 @@ def load_state():
 
 def pivot_level(slider_value):
     """Уровень серого 0..1 для gamma: ползунок инвертирован, чтобы вправо картинка
-    светлела (центр опускается), а влево — темнела, как и цвет дорожки."""
-    return (PIVOT_MAX - slider_value) / 100
+    светлела (центр опускается), а влево — темнела, как и цвет дорожки. На 100 центр
+    у чёрного (0), правее он отрицательный: тёмное тянется вверх и сильнее светлеет."""
+    return (100 - slider_value) / 100
 
 
 def save_state(temp, bright, contrast, pivot):
@@ -91,6 +117,39 @@ def save_state(temp, bright, contrast, pivot):
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump({"temp": temp, "bright": bright, "contrast": contrast,
                        "pivot": pivot}, f)
+    except OSError:
+        pass
+
+
+def load_presets():
+    """Пресеты по умолчанию, поверх — сохранённые через «Сохранить» (по названию).
+    У несохранённых contrast и pivot = None: такой пресет меняет только температуру
+    и яркость."""
+    presets = [{"name": n, "temp": t, "bright": b, "contrast": None, "pivot": None}
+               for n, t, b in PRESETS]
+    try:
+        with open(PRESETS_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return presets
+    for p in presets:
+        try:
+            s = saved[p["name"]]
+            values = [int(s[k]) for k in ("temp", "bright", "contrast", "pivot")]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if in_range(*values):
+            p.update(zip(("temp", "bright", "contrast", "pivot"), values))
+    return presets
+
+
+def save_presets(presets):
+    try:
+        os.makedirs(os.path.dirname(PRESETS_FILE), exist_ok=True)
+        data = {p["name"]: {k: p[k] for k in ("temp", "bright", "contrast", "pivot")}
+                for p in presets if p["contrast"] is not None}
+        with open(PRESETS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
     except OSError:
         pass
 
@@ -124,6 +183,7 @@ class Slider(tk.Canvas):
                          highlightthickness=0, takefocus=True, cursor="hand2")
         self.lo, self.hi, self.step = lo, hi, step
         self.value = value
+        self.enabled = True
         self.command = command
         self.track_color = track_color  # функция: доля 0..1 -> цвет
         self.bind("<Configure>", lambda e: self.redraw())
@@ -157,6 +217,8 @@ class Slider(tk.Canvas):
         n = int(x1 - x0)
         for i in range(n + 1):
             color = self.track_color(i / n)
+            if not self.enabled:
+                color = fade(color)
             if isinstance(color, tuple):          # (верхняя половина, нижняя половина)
                 self.create_line(x0 + i, y0, x0 + i, cy, fill=color[0])
                 self.create_line(x0 + i, cy, x0 + i, y1, fill=color[1])
@@ -164,7 +226,10 @@ class Slider(tk.Canvas):
                 self.create_line(x0 + i, y0, x0 + i, y1, fill=color)
         self.create_rectangle(x0, y0, x1, y1, outline=BORDER)
         x = self._x_of(self.value)
-        ring = ACCENT if self.focus_get() is self else FG
+        if not self.enabled:
+            ring = FG_OFF
+        else:
+            ring = ACCENT if self.focus_get() is self else FG
         self.create_oval(x - self.THUMB_R, cy - self.THUMB_R, x + self.THUMB_R,
                          cy + self.THUMB_R, fill=BG, outline=ring, width=2)
 
@@ -173,7 +238,15 @@ class Slider(tk.Canvas):
         self.value = max(self.lo, min(self.hi, value))
         self.redraw()
 
+    def set_enabled(self, on):
+        """Неактивный ползунок блёклый и не реагирует на мышь и клавиши."""
+        self.enabled = on
+        self.configure(takefocus=on, cursor="hand2" if on else "")
+        self.redraw()
+
     def _emit(self, value):
+        if not self.enabled:
+            return
         value = round(value / self.step) * self.step
         value = max(self.lo, min(self.hi, value))
         if value != self.value:
@@ -187,6 +260,8 @@ class Slider(tk.Canvas):
         return self.lo + max(0.0, min(1.0, frac)) * (self.hi - self.lo)
 
     def _press(self, e):
+        if not self.enabled:
+            return
         self.focus_set()
         self._emit(self._from_x(e.x))
 
@@ -200,18 +275,27 @@ class Slider(tk.Canvas):
 
 # --- само окно --------------------------------------------------------------
 class App:
-    def __init__(self, root):
+    def __init__(self, root, server):
         self.root = root
+        self.server = server         # команды от значка в трее и от повторного запуска
         self.screen = gamma.Screen()
         self.error = None
         self._save_job = None
+        self._blink_job = None
+        self._flash_job = None
+        self.saving = False          # режим «Сохранить»: ждём клика по пресету
+        self.tray = None             # процесс значка в трее
+        self._closed = False
+        self._dimmable = []          # что блекнет и отключается в этом режиме
+        self._entry_cmds = {}        # поле ввода -> его команда применения
+        self.presets = load_presets()
         self.temp, self.bright, self.contrast, self.pivot = self._initial_values()
 
         root.title("Экран: температура и яркость")
         root.configure(bg=BG)
         root.minsize(440, 0)
         root.resizable(True, False)
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
+        icon_path = os.path.join(HERE, "icon.png")
         try:
             root.iconphoto(True, tk.PhotoImage(file=icon_path))
         except tk.TclError:
@@ -231,13 +315,15 @@ class App:
             TEMP_MIN, TEMP_MAX, TEMP_STEP, self.temp,
             self._temp_from_slider, self._temp_from_entry,
             lambda f: rgb_hex(kelvin_to_rgb(TEMP_MIN + f * (TEMP_MAX - TEMP_MIN))),
-            ("теплее", "холоднее"))
+            ("теплее", "холоднее"),
+            reset=lambda: self.apply_temp(TEMP_DEFAULT))
         self.bright_slider = self._section(
             outer, "Яркость", "%", self.bright_var,
             BRIGHT_MIN, BRIGHT_MAX, 1, self.bright,
             self._bright_from_slider, self._bright_from_entry,
             lambda f: rgb_hex(kelvin_to_rgb(self.temp), 0.08 + 0.92 * f),
-            ("темнее", "ярче"))
+            ("темнее", "ярче"),
+            reset=lambda: self.apply_bright(BRIGHT_DEFAULT))
         self.contrast_slider = self._section(
             outer, "Контрастность", "%", self.contrast_var,
             CONTRAST_MIN, CONTRAST_MAX, 1, self.contrast,
@@ -248,37 +334,47 @@ class App:
             outer, "Центр контраста", "%", self.pivot_var,
             PIVOT_MIN, PIVOT_MAX, 1, self.pivot,
             self._pivot_from_slider, self._pivot_from_entry,
-            lambda f: rgb_hex((255, 255, 255), f), ("темнеет больше", "светлеет больше"),
+            lambda f: rgb_hex((255, 255, 255), min(1.0, f * PIVOT_MAX / 100)),
+            ("темнеет больше", "светлеет больше"),
             reset=lambda: self.apply_pivot(PIVOT_DEFAULT),
             hint="При контрасте > 100 %: вправо — больше тонов светлеет, влево — темнеет.\n"
-                 "Тусклые рамки ярче: ≈ 80–90 %. При контрасте 100 % не действует.")
+                 "Тусклые рамки ярче: ≈ 80–100 %; правее 100 % светлеет и чёрное.")
 
         presets = tk.Frame(outer, bg=BG)
         presets.pack(fill="x", pady=(14, 0))
-        for i, (name, t, b) in enumerate(PRESETS):
+        self.preset_buttons = []
+        for i, p in enumerate(self.presets):
             presets.columnconfigure(i, weight=1, uniform="p")
-            self._button(presets, "%s\n%d K · %d %%" % (name, t, b),
-                         lambda t=t, b=b: self.apply_values(t, b)
-                         ).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0))
+            btn = self._button(presets, self._preset_text(p),
+                               lambda i=i: self._preset_click(i))
+            btn.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0))
+            self.preset_buttons.append(btn)
 
         bottom = tk.Frame(outer, bg=BG)
         bottom.pack(fill="x", pady=(12, 0))
         self.status = tk.Label(bottom, bg=BG, fg=FG_DIM, anchor="w", font=("TkDefaultFont", 9))
-        self.status.pack(side="left", fill="x", expand=True)
-        self._button(bottom, "Сбросить всё", self.reset_all,
-                     pad=(14, 4)).pack(side="right")
+        self.status.pack(fill="x")
+        buttons = tk.Frame(bottom, bg=BG)
+        buttons.pack(fill="x", pady=(8, 0))
+        reset_btn = self._button(buttons, "Сбросить всё", self.reset_all, pad=(14, 4))
+        reset_btn.pack(side="right")
+        self._dimmable.append(reset_btn)
+        self.save_btn = self._button(buttons, "Сохранить", self.toggle_save_mode, pad=(14, 4))
+        self.save_btn.pack(side="right", padx=(0, 8))
 
+        root.bind("<Escape>", lambda e: self.cancel_save_mode())
         root.protocol("WM_DELETE_WINDOW", self._close)
         self._refresh_status()
+        self._start_tray()
+        root.after(POLL_MS, self._poll_ipc)
 
     def _initial_values(self):
         """Сохранённые значения, если экран сейчас именно такой; иначе — то, что видит xsct."""
         saved = load_state()
         if saved:
             t, b, c, p = saved
-            if (TEMP_MIN <= t <= TEMP_MAX and BRIGHT_MIN <= b <= BRIGHT_MAX
-                    and CONTRAST_MIN <= c <= CONTRAST_MAX and PIVOT_MIN <= p <= PIVOT_MAX
-                    and self.screen.matches(t, b / 100, c / 100, pivot_level(p))):
+            if in_range(t, b, c, p) and self.screen.matches(t, b / 100, c / 100,
+                                                            pivot_level(p)):
                 return t, b, c, p
         t, b = read_current()
         return t, b, CONTRAST_DEFAULT, PIVOT_DEFAULT
@@ -298,50 +394,84 @@ class App:
                      darkcolor=BORDER, arrowcolor=FG, insertcolor=FG,
                      selectbackground=ACCENT, selectforeground=BG, padding=4)
         st.map("Warm.TSpinbox", bordercolor=[("focus", ACCENT)],
-               lightcolor=[("focus", ACCENT)], darkcolor=[("focus", ACCENT)])
+               lightcolor=[("focus", ACCENT)], darkcolor=[("focus", ACCENT)],
+               foreground=[("disabled", FG_OFF)], arrowcolor=[("disabled", FG_OFF)],
+               fieldbackground=[("disabled", PANEL)])
 
     def _button(self, parent, text, command, pad=(8, 6)):
         btn = tk.Button(parent, text=text, command=command, bg=PANEL, fg=FG,
                         activebackground=BORDER, activeforeground=FG,
+                        disabledforeground=FG_OFF,
                         relief="flat", bd=0, highlightthickness=1,
                         highlightbackground=BORDER, highlightcolor=ACCENT,
                         padx=pad[0], pady=pad[1], cursor="hand2",
                         font=("TkDefaultFont", 9))
-        btn.bind("<Enter>", lambda e: btn.configure(bg=BORDER))
-        btn.bind("<Leave>", lambda e: btn.configure(bg=PANEL))
+        btn.idle_bg, btn.hover_bg = PANEL, BORDER
+
+        def enter(e):
+            if btn.cget("state") != "disabled":
+                btn.configure(bg=btn.hover_bg)
+        btn.bind("<Enter>", enter)
+        btn.bind("<Leave>", lambda e: btn.configure(bg=btn.idle_bg))
         return btn
+
+    @staticmethod
+    def _light(btn, on):
+        """Подсветить кнопку (пресеты и «Отмена» в режиме сохранения) или вернуть как было."""
+        btn.idle_bg, btn.hover_bg = (HILITE, HILITE_HOVER) if on else (PANEL, BORDER)
+        btn.configure(bg=btn.idle_bg, fg=FG_HI if on else FG,
+                      activebackground=btn.hover_bg,
+                      highlightbackground=ACCENT if on else BORDER)
+
+    @staticmethod
+    def _preset_text(p):
+        text = "%s\n%d K · %d %%" % (p["name"], p["temp"], p["bright"])
+        if p["contrast"] is not None:
+            text += "\nконтр. %d · ц. %d" % (p["contrast"], p["pivot"])
+        return text
 
     def _section(self, parent, title, unit, var, lo, hi, step, value,
                  slider_cmd, entry_cmd, track_color, ends, reset=None, hint=None):
         box = tk.Frame(parent, bg=PANEL, padx=14, pady=10)
         box.pack(fill="x", pady=(0, 10))
+        widgets = []
 
         head = tk.Frame(box, bg=PANEL)
         head.pack(fill="x")
-        tk.Label(head, text=title, bg=PANEL, fg=FG,
-                 font=("TkDefaultFont", 11, "bold")).pack(side="left")
-        tk.Label(head, text=unit, bg=PANEL, fg=FG_DIM).pack(side="right", padx=(4, 0))
+        widgets.append(tk.Label(head, text=title, bg=PANEL, fg=FG,
+                                font=("TkDefaultFont", 11, "bold")))
+        widgets[-1].pack(side="left")
+        widgets.append(tk.Label(head, text=unit, bg=PANEL, fg=FG_DIM))
+        widgets[-1].pack(side="right", padx=(4, 0))
         spin = ttk.Spinbox(head, from_=lo, to=hi, increment=step if unit == "K" else 1,
                            textvariable=var, width=7, justify="right",
                            style="Warm.TSpinbox", command=entry_cmd)
         spin.pack(side="right")
+        widgets.append(spin)
+        self._entry_cmds[spin] = entry_cmd
         if reset:
-            self._button(head, "Сбросить", reset, pad=(8, 1)).pack(side="right", padx=(0, 10))
+            widgets.append(self._button(head, "Сбросить", reset, pad=(8, 1)))
+            widgets[-1].pack(side="right", padx=(0, 10))
         for ev in ("<Return>", "<KP_Enter>", "<FocusOut>"):
             spin.bind(ev, lambda e, cmd=entry_cmd: cmd())
 
         slider = Slider(box, lo, hi, step, value, slider_cmd, track_color)
         slider.pack(fill="x", pady=(6, 0))
+        widgets.append(slider)
 
         legend = tk.Frame(box, bg=PANEL)
         legend.pack(fill="x")
-        tk.Label(legend, text="◀ %s  %d" % (ends[0], lo), bg=PANEL, fg=FG_DIM,
-                 font=("TkDefaultFont", 8)).pack(side="left")
-        tk.Label(legend, text="%d  %s ▶" % (hi, ends[1]), bg=PANEL, fg=FG_DIM,
-                 font=("TkDefaultFont", 8)).pack(side="right")
+        widgets.append(tk.Label(legend, text="◀ %s  %d" % (ends[0], lo), bg=PANEL,
+                                fg=FG_DIM, font=("TkDefaultFont", 8)))
+        widgets[-1].pack(side="left")
+        widgets.append(tk.Label(legend, text="%d  %s ▶" % (hi, ends[1]), bg=PANEL,
+                                fg=FG_DIM, font=("TkDefaultFont", 8)))
+        widgets[-1].pack(side="right")
         if hint:
-            tk.Label(box, text=hint, bg=PANEL, fg=FG_DIM, justify="left", anchor="w",
-                     font=("TkDefaultFont", 8)).pack(fill="x", pady=(6, 0))
+            widgets.append(tk.Label(box, text=hint, bg=PANEL, fg=FG_DIM, justify="left",
+                                    anchor="w", font=("TkDefaultFont", 8)))
+            widgets[-1].pack(fill="x", pady=(6, 0))
+        self._dimmable.extend(widgets)
         return slider
 
     # --- изменение значений ---
@@ -361,10 +491,57 @@ class App:
         self._save_job = None
         save_state(self.temp, self.bright, self.contrast, self.pivot)
 
+    # --- трей и команды извне ---
+    def _start_tray(self):
+        try:
+            self.tray = subprocess.Popen(
+                ["/usr/bin/python3", os.path.join(HERE, "tray.py"),
+                 json.dumps([p["name"] for p in self.presets])])
+        except OSError:
+            self.tray = None
+
+    def _tray_alive(self):
+        return self.tray is not None and self.tray.poll() is None
+
+    def _poll_ipc(self):
+        for command in self.server.poll():
+            self._command(command)
+        if not self._closed:
+            self.root.after(POLL_MS, self._poll_ipc)
+
+    def _command(self, command):
+        name, _, arg = command.partition(" ")
+        if name == "show":
+            self.show()
+        elif name == "preset" and arg.isdigit() and int(arg) < len(self.presets):
+            self.cancel_save_mode()
+            self.apply_preset(int(arg))
+        elif name == "quit":
+            self.quit()
+
+    def show(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
     def _close(self):
-        if self._save_job:
-            self.root.after_cancel(self._save_job)
+        """Крестик: окно прячется в трей, а без трея закрывает приложение."""
+        if self._tray_alive():
+            self.cancel_save_mode()
+            self._save()
+            self.root.withdraw()
+        else:
+            self.quit()
+
+    def quit(self):
+        self._closed = True
+        for job in (self._save_job, self._blink_job, self._flash_job):
+            if job:
+                self.root.after_cancel(job)
         self._save()
+        if self._tray_alive():
+            self.tray.terminate()
+        self.server.close()
         self.screen.close()
         self.root.destroy()
 
@@ -397,16 +574,23 @@ class App:
             return fallback
 
     def _temp_from_entry(self):
-        self.temp = self._parse(self.temp_var.get(), TEMP_MIN, TEMP_MAX, self.temp)
-        self.temp_var.set(str(self.temp))
-        self.temp_slider.set(self.temp)
+        self.apply_temp(self._parse(self.temp_var.get(), TEMP_MIN, TEMP_MAX, self.temp))
+
+    def apply_temp(self, temp):
+        self.temp = temp
+        self.temp_var.set(str(temp))
+        self.temp_slider.set(temp)
         self.bright_slider.redraw()
         self._commit()
 
     def _bright_from_entry(self):
-        self.bright = self._parse(self.bright_var.get(), BRIGHT_MIN, BRIGHT_MAX, self.bright)
-        self.bright_var.set(str(self.bright))
-        self.bright_slider.set(self.bright)
+        self.apply_bright(self._parse(self.bright_var.get(), BRIGHT_MIN, BRIGHT_MAX,
+                                      self.bright))
+
+    def apply_bright(self, bright):
+        self.bright = bright
+        self.bright_var.set(str(bright))
+        self.bright_slider.set(bright)
         self._commit()
 
     def _contrast_from_entry(self):
@@ -430,12 +614,15 @@ class App:
 
     def reset_all(self):
         """Всё к нейтральному виду одним применением."""
-        self.contrast, self.pivot = CONTRAST_DEFAULT, PIVOT_DEFAULT
-        self.contrast_var.set(str(self.contrast))
-        self.pivot_var.set(str(self.pivot))
-        self.contrast_slider.set(self.contrast)
-        self.pivot_slider.set(self.pivot)
-        self.apply_values(TEMP_DEFAULT, BRIGHT_DEFAULT)
+        self.apply_all(TEMP_DEFAULT, BRIGHT_DEFAULT, CONTRAST_DEFAULT, PIVOT_DEFAULT)
+
+    def apply_all(self, temp, bright, contrast, pivot):
+        self.contrast, self.pivot = contrast, pivot
+        self.contrast_var.set(str(contrast))
+        self.pivot_var.set(str(pivot))
+        self.contrast_slider.set(contrast)
+        self.pivot_slider.set(pivot)
+        self.apply_values(temp, bright)
 
     def apply_values(self, temp, bright):
         self.temp, self.bright = temp, bright
@@ -445,8 +632,88 @@ class App:
         self.bright_slider.set(bright)
         self._commit()
 
+    # --- пресеты и режим «Сохранить» ---
+    def _preset_click(self, i):
+        p = self.presets[i]
+        if self.saving:
+            p.update(temp=self.temp, bright=self.bright, contrast=self.contrast,
+                     pivot=self.pivot)
+            self.preset_buttons[i].configure(text=self._preset_text(p))
+            save_presets(self.presets)
+            self.cancel_save_mode()
+            self._flash("Сохранено в «%s»" % p["name"])
+        else:
+            self.apply_preset(i)
+
+    def apply_preset(self, i):
+        p = self.presets[i]
+        if p["contrast"] is None:
+            self.apply_values(p["temp"], p["bright"])
+        else:
+            self.apply_all(p["temp"], p["bright"], p["contrast"], p["pivot"])
+
+    def toggle_save_mode(self):
+        if self.saving:
+            self.cancel_save_mode()
+            return
+        focused = self.root.focus_get()
+        if focused in self._entry_cmds:      # число введено, но Enter ещё не нажат
+            self._entry_cmds[focused]()
+        self.root.focus_set()
+        self.saving = True
+        self._set_dimmed(True)
+        self.save_btn.configure(text="Отмена")
+        self._light(self.save_btn, True)
+        self.status.configure(text="Выберите пресет для сохранения · Esc — отмена", fg=ACCENT)
+        self._blink(8)
+
+    def cancel_save_mode(self):
+        if not self.saving:
+            return
+        self.saving = False
+        if self._blink_job:
+            self.root.after_cancel(self._blink_job)
+            self._blink_job = None
+        for btn in self.preset_buttons:
+            self._light(btn, False)
+        self.save_btn.configure(text="Сохранить")
+        self._light(self.save_btn, False)
+        self._set_dimmed(False)
+        self._refresh_status()
+
+    def _blink(self, left):
+        """Пресеты мигают около секунды, потом остаются подсвеченными."""
+        for btn in self.preset_buttons:
+            self._light(btn, left % 2 == 0)
+        self._blink_job = self.root.after(120, self._blink, left - 1) if left > 0 else None
+
+    def _set_dimmed(self, on):
+        """Всё, кроме пресетов и «Сохранить/Отмена», блекнет и не реагирует."""
+        for w in self._dimmable:
+            if isinstance(w, Slider):
+                w.set_enabled(not on)
+            elif isinstance(w, ttk.Spinbox):
+                w.state(["disabled"] if on else ["!disabled"])
+            elif isinstance(w, tk.Button):
+                w.configure(state="disabled" if on else "normal",
+                            cursor="" if on else "hand2")
+            elif on:
+                w.normal_fg = w.cget("fg")
+                w.configure(fg=FG_OFF)
+            else:
+                w.configure(fg=w.normal_fg)
+
+    def _flash(self, text):
+        """Короткое сообщение в строке статуса, потом снова текущие значения."""
+        self.status.configure(text=text, fg=ACCENT)
+        if self._flash_job:
+            self.root.after_cancel(self._flash_job)
+        self._flash_job = self.root.after(2500, self._refresh_status)
+
     # --- статус ---
     def _refresh_status(self):
+        if self.saving:
+            return
         if self.error:
             self.status.configure(text="Ошибка: " + self.error, fg="#d2604f")
         else:
@@ -456,13 +723,22 @@ class App:
 
 
 def main():
+    in_tray = "--tray" in sys.argv[1:]     # автозапуск: окно не показывать, только значок
+    try:
+        server = ipc.Server()
+    except OSError:                         # уже запущено: просто показать то окно
+        if not in_tray:
+            ipc.send("show")
+        return 0
     root = tk.Tk(className="NightScreen")
     try:
-        App(root)
+        App(root, server)
     except gamma.GammaError as exc:
         root.withdraw()
         messagebox.showerror("Не удалось управлять экраном", str(exc))
         return 1
+    if in_tray:
+        root.withdraw()
     root.mainloop()
     return 0
 
