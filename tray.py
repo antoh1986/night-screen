@@ -6,7 +6,8 @@
 Если окна больше нет, значок сам исчезает.
 
 Нужен системный питон: gi и XApp есть только в нём (у conda их нет), поэтому шебанг —
-/usr/bin/python3. Первый аргумент — JSON-список названий пресетов.
+/usr/bin/python3. Первый аргумент — JSON с подписями меню уже на нужном языке:
+{"open": ..., "quit": ..., "presets": [названия пресетов по порядку]}.
 """
 
 import json
@@ -36,20 +37,22 @@ def menu_item(label, command):
     return item
 
 
-def build_menu(names):
+def build_menu(labels):
     menu = Gtk.Menu()
-    menu.append(menu_item("Открыть", "show"))
+    menu.append(menu_item(labels["open"], "show"))
     menu.append(Gtk.SeparatorMenuItem())
-    for i, name in enumerate(names):
+    for i, name in enumerate(labels["presets"]):
         menu.append(menu_item(name, "preset %d" % i))
     menu.append(Gtk.SeparatorMenuItem())
-    menu.append(menu_item("Выход", "quit"))
+    menu.append(menu_item(labels["quit"], "quit"))
     menu.show_all()
     return menu
 
 
 def main():
-    names = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []
+    labels = {"open": "Open", "quit": "Quit", "presets": []}
+    if len(sys.argv) > 1:
+        labels.update(json.loads(sys.argv[1]))
     parent = os.getppid()
 
     GLib.set_prgname("night-screen")     # от него имя значка на шине; «tray.py» слишком общее
@@ -57,7 +60,7 @@ def main():
     icon.set_name("night-screen")
     icon.set_icon_name(os.path.join(HERE, "icon.png"))
     icon.set_tooltip_text("Night Screen")
-    icon.set_secondary_menu(build_menu(names))
+    icon.set_secondary_menu(build_menu(labels))
     icon.connect("activate", lambda _icon, _button, _time: tell("show"))
 
     def parent_alive():

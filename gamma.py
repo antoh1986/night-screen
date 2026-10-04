@@ -37,7 +37,8 @@ class _XRRCrtcGamma(ctypes.Structure):
 
 
 class GammaError(Exception):
-    pass
+    """Текст — не сообщение, а ключ: libs, display, xrandr, crtc. Окно переводит его
+    (i18n, «err.<ключ>»), чтобы модуль не зависел от языка интерфейса."""
 
 
 def _trim(x, lo, hi):
@@ -89,7 +90,7 @@ class Screen:
         x11 = ctypes.util.find_library("X11")
         xrandr = ctypes.util.find_library("Xrandr")
         if not x11 or not xrandr:
-            raise GammaError("не найдены libX11 / libXrandr")
+            raise GammaError("libs")
         self._x11 = ctypes.CDLL(x11)
         self._xr = ctypes.CDLL(xrandr)
         x, xr = self._x11, self._xr
@@ -116,14 +117,14 @@ class Screen:
 
         self._dpy = x.XOpenDisplay(None)
         if not self._dpy:
-            raise GammaError("не удалось подключиться к X-серверу")
+            raise GammaError("display")
         self._root = x.XDefaultRootWindow(self._dpy)
 
     def _crtcs(self):
         """Активные CRTC: [(id, размер таблицы)]."""
         res = self._xr.XRRGetScreenResourcesCurrent(self._dpy, self._root)
         if not res:
-            raise GammaError("XRandR не отвечает")
+            raise GammaError("xrandr")
         try:
             found = []
             for k in range(res.contents.ncrtc):
@@ -140,7 +141,7 @@ class Screen:
         pivot — уровень серого, может быть < 0)."""
         crtcs = self._crtcs()
         if not crtcs:
-            raise GammaError("нет активных экранов с гамма-таблицей")
+            raise GammaError("crtc")
         for crtc, size in crtcs:
             g = self._xr.XRRAllocGamma(size)
             try:

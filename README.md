@@ -10,7 +10,9 @@ hardware brightness.
 
 ![Night Screen window](docs/screenshot.png)
 
-> The interface itself is in Russian.
+The interface is available in English (default), Chinese and Russian. Pick the
+language with the flag buttons in the top right corner of the window; the choice is
+remembered in `~/.config/night-screen/settings.json` and also applies to the tray menu.
 
 ## Run
 
@@ -37,13 +39,12 @@ Without them the window works as before; closing it quits the app.
 - Sliders: mouse, wheel, arrow keys (one step), PageUp/PageDown (×10). Entry
   fields: type a number and press Enter; out-of-range values are clamped.
 - Presets (Day / Evening / Night / Deep night) change only temperature and
-  brightness by default. "Сохранить" (Save) at the bottom stores all four current
-  values in a preset: the presets light up and blink, the rest of the window is
-  greyed out, and a click on a preset saves into it. Esc or "Отмена" (Cancel)
-  leaves this mode. Saved presets live in `~/.config/night-screen/presets.json`;
+  brightness by default. "Save" at the bottom stores all four current values in a
+  preset: the presets light up and blink, the rest of the window is greyed out, and a
+  click on a preset saves into it. Esc or "Cancel" leaves this mode. Saved presets live in `~/.config/night-screen/presets.json`;
   delete it to get the defaults back.
-- "Сбросить всё" (Reset all) restores everything: 6500 K, 100 %, contrast 100 %,
-  pivot 50 %. Each slider also has its own "Сбросить" button for just that value.
+- "Reset all" restores everything: 6500 K, 100 %, contrast 100 %, pivot 50 %. Each
+  slider also has its own "Reset" button for just that value.
   To restore the screen from a terminal: `xsct 6500 1`.
 - Contrast is a slope around the pivot. Above 100 %, tones darker than the pivot get
   darker and lighter ones get lighter (extremes are clipped); below 100 %,
@@ -59,7 +60,7 @@ Without them the window works as before; closing it quits the app.
 ## Tray
 
 Left click opens the window; right click opens a menu with the presets
-(Day / Evening / Night / Deep night), "Открыть" (Open) and "Выход" (Quit). The
+(Day / Evening / Night / Deep night), "Open" and "Quit". The
 window's close button only hides it to the tray; quit from the menu. Starting
 `./run.sh` again just brings up the running window, and `./run.sh --tray` starts
 hidden. A preset picked from the tray applies exactly as the button in the window.
@@ -99,6 +100,8 @@ with contrast 150 %, black rises to 25 %). At 100 contrast is plain amplificatio
 ## Files
 
 - `night_screen.py`: the window; limits and presets are at the top.
+- `i18n.py`: all interface texts (English, Chinese, Russian). `flags/`: the flag
+  pictures (`make_flags.py` redraws them; it needs Pillow, the app does not).
 - `gamma.py`: writes the gamma ramp (at contrast 100 % it matches `xsct` exactly).
 - `tray.py`, `ipc.py`: the tray icon (a separate process) and the single-instance
   socket it talks to the window through.
