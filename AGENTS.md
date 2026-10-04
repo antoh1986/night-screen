@@ -30,7 +30,7 @@
   повторный запуск шлют команды `show`, `preset N`, `quit`.
 - `run.sh` — запуск; ярлык на рабочем столе указывает на него. Автозапуск —
   `~/.config/autostart/night-screen.desktop` с `run.sh --tray` (окно скрыто).
-- `night-screen.desktop.example` — шаблон автозапуска, `docs/` — скриншоты для README (en и ru),
+- `night-screen.desktop.example` — шаблон автозапуска, `docs/` — скриншоты для README (en, zh, ru),
   `LICENSE` — MIT.
 
 ## Важно помнить

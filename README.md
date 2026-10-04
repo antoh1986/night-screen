@@ -1,6 +1,6 @@
 # Night Screen
 
-**English** · [Русский](README.ru.md)
+**English** · [中文](README.zh.md) · [Русский](README.ru.md)
 
 A small GUI for Linux (X11) to dim and warm your screen at night: color
 temperature (1000–10000 K), brightness (10–100 %), contrast (30–300 %) and the
