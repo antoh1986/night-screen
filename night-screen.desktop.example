@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Night Screen (значок в трее)
+Comment=Температура, яркость и контраст экрана: значок в трее при входе в систему
+Exec=/path/to/night-screen/run.sh --tray
+Icon=/path/to/night-screen/icon.svg
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-Delay=3
