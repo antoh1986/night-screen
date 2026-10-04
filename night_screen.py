@@ -25,7 +25,7 @@ CONTRAST_MIN, CONTRAST_MAX = 30, 150  # проценты; выше 100 край�
 CONTRAST_DEFAULT = 100
 PIVOT_MIN, PIVOT_MAX = 0, 100       # ползунок «Центр контраста»: вправо — больше светлеет
 PIVOT_DEFAULT = 50
-STATE_FILE = os.path.expanduser("~/.config/screen-warmth/state.json")
+STATE_FILE = os.path.expanduser("~/.config/night-screen/state.json")
 
 # (название, температура K, яркость %)
 PRESETS = [
@@ -456,7 +456,7 @@ class App:
 
 
 def main():
-    root = tk.Tk(className="ScreenWarmth")
+    root = tk.Tk(className="NightScreen")
     try:
         App(root)
     except gamma.GammaError as exc:
