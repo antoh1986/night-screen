@@ -32,6 +32,7 @@ PIVOT_MIN, PIVOT_MAX = 0, 150       # ползунок «Центр контра
 PIVOT_DEFAULT = 50
 HERE = os.path.dirname(os.path.abspath(__file__))
 POLL_MS = 100                       # как часто смотрим команды от значка в трее
+WATCH_MS = 500                      # как часто проверяем, не переписал ли кто-то гамму
 STATE_FILE = os.path.expanduser("~/.config/night-screen/state.json")
 PRESETS_FILE = os.path.expanduser("~/.config/night-screen/presets.json")
 SETTINGS_FILE = os.path.expanduser("~/.config/night-screen/settings.json")
@@ -328,6 +329,7 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self._close)
         self._start_tray()
         root.after(POLL_MS, self._poll_ipc)
+        root.after(WATCH_MS, self._watch_gamma)
 
     def _build(self):
         """Всё содержимое окна на текущем языке. Смена языка просто строит его заново:
@@ -541,6 +543,12 @@ class App:
 
     # --- изменение значений ---
     def _commit(self):
+        self._apply()
+        if self._save_job:
+            self.root.after_cancel(self._save_job)
+        self._save_job = self.root.after(500, self._save)
+
+    def _apply(self):
         try:
             self.screen.set(self.temp, self.bright / 100, self.contrast / 100,
                             pivot_level(self.pivot))
@@ -548,9 +556,17 @@ class App:
         except gamma.GammaError as exc:
             self.error = t("err." + str(exc))
         self._refresh_status()
-        if self._save_job:
-            self.root.after_cancel(self._save_job)
-        self._save_job = self.root.after(500, self._save)
+
+    def _watch_gamma(self):
+        """Если гамму переписал кто-то другой (например, ночной режим Cinnamon при
+        своих пересчётах), записываем свою заново."""
+        try:
+            if self.screen.changed():
+                self._apply()
+        except gamma.GammaError:
+            pass
+        if not self._closed:
+            self.root.after(WATCH_MS, self._watch_gamma)
 
     def _save(self):
         self._save_job = None

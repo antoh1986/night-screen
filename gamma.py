@@ -119,6 +119,7 @@ class Screen:
         if not self._dpy:
             raise GammaError("display")
         self._root = x.XDefaultRootWindow(self._dpy)
+        self._written = {}           # CRTC -> (R, G, B), что мы записали последним
 
     def _crtcs(self):
         """Активные CRTC: [(id, размер таблицы)]."""
@@ -146,6 +147,7 @@ class Screen:
             g = self._xr.XRRAllocGamma(size)
             try:
                 channels = build_ramp(size, temp, brightness, contrast, pivot)
+                self._written[crtc] = channels
                 for dst, values in zip((g.contents.red, g.contents.green, g.contents.blue),
                                        channels):
                     ctypes.memmove(dst, (ctypes.c_ushort * size)(*values), size * 2)
@@ -157,9 +159,9 @@ class Screen:
     def read(self):
         """Текущая таблица первого активного CRTC: (R, G, B) списками или None."""
         crtcs = self._crtcs()
-        if not crtcs:
-            return None
-        crtc, size = crtcs[0]
+        return self._table(*crtcs[0]) if crtcs else None
+
+    def _table(self, crtc, size):
         g = self._xr.XRRGetCrtcGamma(self._dpy, crtc)
         if not g:
             return None
@@ -168,6 +170,20 @@ class Screen:
                          for ch in (g.contents.red, g.contents.green, g.contents.blue))
         finally:
             self._xr.XRRFreeGamma(g)
+
+    def changed(self, tolerance=300):
+        """Переписал ли кто-то таблицу после нашей записи (ночной режим Cinnamon/GNOME,
+        redshift и т. п.) или появился CRTC, куда мы не писали. Доли миллисекунды."""
+        for crtc, size in self._crtcs():
+            mine = self._written.get(crtc)
+            if mine is None:
+                return True
+            cur = self._table(crtc, size)
+            if cur is not None and list(cur) != list(mine) and any(
+                    abs(a - b) > tolerance
+                    for cur_ch, mine_ch in zip(cur, mine) for a, b in zip(cur_ch, mine_ch)):
+                return True
+        return False
 
     def matches(self, temp, brightness, contrast, pivot=0.5, tolerance=300):
         """Совпадает ли текущая таблица с расчётной (допуск в единицах 0..65535)."""

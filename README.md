@@ -45,7 +45,11 @@ Without them the window works as before; closing it quits the app.
   delete it to get the defaults back.
 - "Reset all" restores everything: 6500 K, 100 %, contrast 100 %, pivot 50 %. Each
   slider also has its own "Reset" button for just that value.
-  To restore the screen from a terminal: `xsct 6500 1`.
+  To restore the screen from a terminal (with the app not running): `xsct 6500 1`.
+- While the app is running it keeps its gamma table: if another program rewrites it
+  (the desktop's own night light, redshift, `xsct`), the app writes its own back
+  within half a second. Turn off the built-in night light so they don't fight, e.g.
+  in Cinnamon: `gsettings set org.cinnamon.settings-daemon.plugins.color night-light-enabled false`.
 - Contrast is a slope around the pivot. Above 100 %, tones darker than the pivot get
   darker and lighter ones get lighter (extremes are clipped); below 100 %,
   everything is pulled toward the pivot. Brightness and temperature are applied
